@@ -101,7 +101,7 @@ class NginxServersController:
             docker_run_command.append("-p")
             docker_run_command.append(f"{host_port}:{container_port}")
 
-        docker_run_command.append("nginx")
+        docker_run_command.append(config.NGINX_DOCKER_IMAGE)
         await anyio.run_process(docker_run_command)
         self.nginx_servers_running.add(container_name)
         logging.info(f"{container_name} has started successfully!")
