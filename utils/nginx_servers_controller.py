@@ -83,12 +83,15 @@ class NginxServersController:
         await grpc_client.notify(json.dumps(json_message))
 
     async def __start_nginx_server_container(self, container_name, publish_instructions):
-        docker_run_command = ["docker", "run", "-d", "--rm", "--name", container_name, "-v",
-                              f"{config.HOST_TMP_FOLDER}/nginx.conf:/etc/nginx/nginx.conf", "--hostname", container_name]
+        docker_run_command = ["docker", "run", "-d", "--rm", "--name", container_name, "--hostname", container_name,
+                              "-v", f"{config.HOST_TMP_FOLDER}/nginx.conf:/etc/nginx/nginx.conf"]
 
         if config.DEV_ENVIRONMENT:
             docker_run_command.append("-p")
             docker_run_command.append(f"{config.CONFIG_SERVER_PORT}:{config.CONFIG_SERVER_PORT}")
+        else:
+            docker_run_command.append("--network")
+            docker_run_command.append(config.NGINX_CONTROLLER_AGENT_DOCKER_NETWORK)
 
         for container_port in publish_instructions["exposed_ports"]:
             if container_port == "80":
