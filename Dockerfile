@@ -14,8 +14,11 @@ RUN echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.g
     $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
 RUN apt-get update && apt-get install -y docker-ce-cli
 
-COPY run.py .
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+ENV PYTHONPATH=./nginx-controller-common
+COPY nginx-controller-common ./nginx-controller-common
+COPY nginx-controller-agent/utils ./nginx-controller-agent/utils
+COPY nginx-controller-agent/run.py ./nginx-controller-agent/run.py
+COPY nginx-controller-agent/requirements.txt ./nginx-controller-agent/requirements.txt
+RUN pip install --no-cache-dir -r ./nginx-controller-agent/requirements.txt
 
-CMD python run.py
+CMD python ./nginx-controller-agent/run.py
