@@ -1,0 +1,6 @@
+anyio==3.6.2
+boto3==1.26.140
+grpcio==1.54.2
+google==3.0.0
+protobuf==4.23.1
+requests==2.31.0
