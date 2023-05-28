@@ -51,27 +51,12 @@ class NginxServersController:
 
     async def __update_nginx_server_container(self, container_name, publish_instructions):
         if publish_instructions.get("restart_required", False):
-            await anyio.run_process(f"docker stop {container_name}")
             self.nginx_servers_running.remove(container_name)
             await self.__start_nginx_server_container(container_name, publish_instructions)
         else:
             docker_nginx_reload_command = ["docker", "exec", container_name, "nginx", "-s", "reload"]
-            await anyio.run_process(docker_nginx_reload_command)
-            reloaded = False
-
-            while not reloaded:
-                if config.DEV_ENVIRONMENT:
-                    config_server_response = await anyio.to_thread.run_sync(requests.get, f"http://localhost:{config.CONFIG_SERVER_PORT}/")
-                else:
-                    config_server_response = await anyio.to_thread.run_sync(requests.get, f"http://{container_name}:{config.CONFIG_SERVER_PORT}/")
-
-                if config_server_response.status_code != 200:
-                    raise Exception(f"Config server responded with code '{config_server_response.status_code}'. Error: {config_server_response.text}")
-                elif config_server_response.text == publish_instructions["version"]:
-                    break
-
-                await anyio.sleep(0.1)
-
+            await self.__docker_command_handler(docker_nginx_reload_command)
+            await self.__check_nginx_server(container_name, version=publish_instructions["version"])
             logging.info(f"{container_name} reloaded successfully!")
 
         json_message = {
@@ -83,6 +68,9 @@ class NginxServersController:
         await grpc_client.notify(json.dumps(json_message))
 
     async def __start_nginx_server_container(self, container_name, publish_instructions):
+        docker_stop_command = ["docker", "stop", container_name]
+        await self.__docker_command_handler(docker_stop_command, throw_on_error=False)
+
         docker_run_command = ["docker", "run", "-d", "--rm", "--name", container_name, "--hostname", container_name,
                               "-v", f"{config.HOST_TMP_FOLDER}/nginx.conf:/etc/nginx/nginx.conf"]
 
@@ -105,7 +93,8 @@ class NginxServersController:
             docker_run_command.append(f"{host_port}:{container_port}")
 
         docker_run_command.append(config.NGINX_SERVER_CONTAINER_IMAGE)
-        await anyio.run_process(docker_run_command)
+        await self.__docker_command_handler(docker_run_command)
+        await self.__check_nginx_server(container_name, version=publish_instructions["version"])
         self.nginx_servers_running.add(container_name)
         logging.info(f"{container_name} has started successfully!")
 
@@ -122,3 +111,44 @@ class NginxServersController:
 
                     if nginx_server_container_name not in self.nginx_servers_running:
                         aio_task_group.start_soon(self.__start_nginx_server_container, nginx_server_container_name, fallback_publish_instructions)
+
+    @staticmethod
+    async def __docker_command_handler(docker_command, throw_on_error=True):
+        logging.info(f"Running command '{' '.join(docker_command)}'")
+        response = await anyio.run_process(docker_command, check=throw_on_error)
+        logging.info(f"Response -> {response}")
+
+        return response
+
+    @staticmethod
+    async def __check_nginx_server(container_name, version):
+        is_up = False
+
+        if config.DEV_ENVIRONMENT:
+            config_endpoint = f"http://localhost:{config.CONFIG_SERVER_PORT}/"
+        else:
+            config_endpoint = f"http://{container_name}:{config.CONFIG_SERVER_PORT}/"
+
+        logging.info(f"Checking Nginx Server Config Endpoint In '{config_endpoint}'")
+        config_server_response = None
+        await anyio.sleep(1)
+
+        async with anyio.move_on_after(9) as timeout_scope:
+            while not is_up:
+                try:
+                    config_server_response = await anyio.to_thread.run_sync(requests.get, config_endpoint)
+                except Exception:
+                    pass
+
+                if config_server_response:
+                    if config_server_response.status_code != 200:
+                        raise Exception(
+                            f"Config server responded with code '{config_server_response.status_code}'. Error: {config_server_response.text}")
+                    elif config_server_response.text == version:
+                        logging.info(f"Nginx is up with version {version}!")
+                        break
+
+                await anyio.sleep(0.1)
+
+        if timeout_scope.cancel_called:
+            raise Exception("Nginx Server has not responded within the timeout period")

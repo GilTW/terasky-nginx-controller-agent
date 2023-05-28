@@ -4,7 +4,6 @@ import logging
 import hashlib
 import utils.config as config
 from aws_utils import s3_helper
-from pathlib import Path
 from utils.nginx_servers_controller import NginxServersController
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
