@@ -72,8 +72,8 @@ Restart=always
 ExecStartPre=$(echo "$COMMAND" | sed 's/aws ecr/sudo \/usr\/bin\/aws ecr/g' | sed 's/docker login/sudo \/usr\/bin\/docker login/g')
 ExecStartPre=-/usr/bin/docker container stop $AGENT_CONTAINER_NAME
 ExecStartPre=-/usr/bin/docker container rm $AGENT_CONTAINER_NAME
-ExecStartPre=/usr/bin/docker pull $NGINX_SERVER_CONTAINER_IMAGE
-ExecStartPre=/usr/bin/docker pull $NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE
+ExecStartPre=sudo /usr/bin/docker pull $NGINX_SERVER_CONTAINER_IMAGE
+ExecStartPre=sudo /usr/bin/docker pull $NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE
 ExecStart=/usr/bin/docker run --rm --name $AGENT_CONTAINER_NAME --mount type=bind,source="$HOST_TMP_FOLDER",target="$HOST_TMP_FOLDER_MOUNT" \
 --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock --env-file "$SYSTEMD_SERVICE_FOLDER/$ENV_CONFIG_FILE" \
 --network $NGINX_CONTROLLER_AGENT_DOCKER_NETWORK $NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE
