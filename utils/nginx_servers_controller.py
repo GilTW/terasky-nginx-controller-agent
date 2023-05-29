@@ -1,12 +1,13 @@
-import logging
 import os
 import json
 import anyio
 import shutil
+import logging
 import requests
 import utils.config as config
 import utils.grpc_client as grpc_client
 from pathlib import Path
+from datetime import datetime
 from aws_utils import s3_helper
 
 
@@ -20,14 +21,30 @@ class NginxServersController:
         try:
             await self.__download_new_config(publish_instructions["version"])
 
-            async with anyio.create_task_group() as aio_task_group:
-                for server_index in range(0, config.NGINX_SERVERS_COUNT):
-                    nginx_server_container_name = f"nginx-server-{server_index}"
+            if publish_instructions.get("restart_required", False) and len(self.nginx_servers_running) > 0:
+                logging.info(f"Restart required!")
 
-                    if nginx_server_container_name not in self.nginx_servers_running:
-                        aio_task_group.start_soon(self.__start_nginx_server_container, nginx_server_container_name, publish_instructions)
-                    else:
-                        aio_task_group.start_soon(self.__update_nginx_server_container, nginx_server_container_name, publish_instructions)
+            start_time = await anyio.current_time()
+
+            async with anyio.create_task_group() as aio_task_group:
+                async with anyio.move_on_after(config.PUBLISH_TIMEOUT_SECONDS) as timeout_scope:
+                    for server_index in range(0, config.NGINX_SERVERS_COUNT):
+                        nginx_server_container_name = f"nginx-server-{server_index}"
+
+                        if nginx_server_container_name not in self.nginx_servers_running:
+                            aio_task_group.start_soon(self.__start_nginx_server_container, nginx_server_container_name, publish_instructions)
+                        else:
+                            aio_task_group.start_soon(self.__update_nginx_server_container, nginx_server_container_name, publish_instructions)
+
+                if timeout_scope.cancel_called:
+                    raise Exception("Publish timeout has reached!")
+
+            end_time = await anyio.current_time()
+            time_took_sec = end_time - start_time
+            logging.info(f"Publishing version {publish_instructions['version']} took {time_took_sec} seconds.")
+
+            if datetime.now().timestamp() - publish_instructions["timestamp"] < config.PUBLISH_TIMEOUT_SECONDS:
+                await self.__notify_controller(time_took_sec)
 
             if self.nginx_config_backup_file_path.exists():
                 os.remove(self.nginx_config_backup_file_path)
@@ -50,25 +67,25 @@ class NginxServersController:
         self.nginx_config_file_path.write_text(new_config_file_content)
 
     async def __update_nginx_server_container(self, container_name, publish_instructions):
+        start_time = await anyio.current_time()
+
         if publish_instructions.get("restart_required", False):
             self.nginx_servers_running.remove(container_name)
             await self.__start_nginx_server_container(container_name, publish_instructions)
         else:
+            logging.info(f"Reloading {container_name}")
             docker_nginx_reload_command = ["docker", "exec", container_name, "nginx", "-s", "reload"]
             await self.__docker_command_handler(docker_nginx_reload_command)
+            logging.info(f"{container_name} reloaded.")
             await self.__check_nginx_server(container_name, version=publish_instructions["version"])
-            logging.info(f"{container_name} reloaded successfully!")
 
-        json_message = {
-            "server_group": config.NGINX_SERVER_GROUP,
-            "container_publish_result": "Success",
-            "container_name": container_name
-        }
-
-        await grpc_client.notify(json.dumps(json_message))
+        end_time = await anyio.current_time()
+        time_took_sec = end_time - start_time
+        logging.info(f"Updating {container_name} took {time_took_sec} seconds.")
 
     async def __start_nginx_server_container(self, container_name, publish_instructions):
         docker_stop_command = ["docker", "stop", container_name]
+        logging.info(f"Stopping {container_name}...")
         await self.__docker_command_handler(docker_stop_command, throw_on_error=False)
 
         docker_run_command = ["docker", "run", "-d", "--rm", "--name", container_name, "--hostname", container_name,
@@ -93,10 +110,11 @@ class NginxServersController:
             docker_run_command.append(f"{host_port}:{container_port}")
 
         docker_run_command.append(config.NGINX_SERVER_CONTAINER_IMAGE)
+        logging.info(f"Starting {container_name}...")
         await self.__docker_command_handler(docker_run_command)
+        logging.info(f"{container_name} has started.")
         await self.__check_nginx_server(container_name, version=publish_instructions["version"])
         self.nginx_servers_running.add(container_name)
-        logging.info(f"{container_name} has started successfully!")
 
     async def __roll_back(self, latest_publish_instructions, fallback_publish_instructions):
         if self.nginx_config_backup_file_path.exists():
@@ -114,27 +132,27 @@ class NginxServersController:
 
     @staticmethod
     async def __docker_command_handler(docker_command, throw_on_error=True):
-        logging.info(f"Running command '{' '.join(docker_command)}'")
+        logging.debug(f"Running command '{' '.join(docker_command)}'")
         response = await anyio.run_process(docker_command, check=throw_on_error)
-        logging.info(f"Response -> {response}")
+        logging.debug(f"Response -> {response}")
 
         return response
 
     @staticmethod
     async def __check_nginx_server(container_name, version):
-        is_up = False
+        server_updated = False
 
         if config.DEV_ENVIRONMENT:
             config_endpoint = f"http://localhost:{config.CONFIG_SERVER_PORT}/"
         else:
             config_endpoint = f"http://{container_name}:{config.CONFIG_SERVER_PORT}/"
 
-        logging.info(f"Checking Nginx Server Config Endpoint In '{config_endpoint}'")
+        logging.info(f"Checking Nginx server config endpoint In '{config_endpoint}'")
         config_server_response = None
         await anyio.sleep(1)
 
         async with anyio.move_on_after(9) as timeout_scope:
-            while not is_up:
+            while not server_updated:
                 try:
                     config_server_response = await anyio.to_thread.run_sync(requests.get, config_endpoint)
                 except Exception:
@@ -143,12 +161,23 @@ class NginxServersController:
                 if config_server_response:
                     if config_server_response.status_code != 200:
                         raise Exception(
-                            f"Config server responded with code '{config_server_response.status_code}'. Error: {config_server_response.text}")
+                            f"{container_name} config server responded with code '{config_server_response.status_code}'. Error: {config_server_response.text}")
                     elif config_server_response.text == version:
-                        logging.info(f"Nginx is up with version {version}!")
-                        break
+                        logging.info(f"{container_name} is up with version {version}!")
+                        server_updated = True
 
                 await anyio.sleep(0.1)
 
         if timeout_scope.cancel_called:
-            raise Exception("Nginx Server has not responded within the timeout period")
+            raise Exception("Nginx Server has not updated within the timeout period")
+
+    @staticmethod
+    async def __notify_controller(time_took_seconds):
+        json_message = {
+            "server_group": config.NGINX_SERVER_GROUP,
+            "containers_publish_result": "Success",
+            "containers_count": config.NGINX_SERVERS_COUNT,
+            "time_took_seconds": time_took_seconds
+        }
+
+        await grpc_client.notify(json.dumps(json_message))

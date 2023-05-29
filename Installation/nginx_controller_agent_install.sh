@@ -26,7 +26,7 @@ echo "Step 3 - Pull Nginx Server Container"
 echo "-----------------------------------------------------------------------------------------------------------"
 echo "# Pulling Nginx Server Image From '$NGINX_SERVER_CONTAINER_IMAGE'"
 echo "- Command: docker pull $NGINX_SERVER_CONTAINER_IMAGE"
-docker pull $NGINX_SERVER_CONTAINER_IMAGE
+sudo docker pull $NGINX_SERVER_CONTAINER_IMAGE
 echo "# Done"
 echo ""
 
@@ -35,7 +35,7 @@ echo "Step 4 - Pull Nginx Controll Agent Container"
 echo "-----------------------------------------------------------------------------------------------------------"
 echo "# Pulling Nginx Server Image From '$NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE'"
 echo "- Command: docker pull $NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE"
-docker pull $NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE
+sudo docker pull $NGINX_CONTROLLER_AGENT_CONTAINER_IMAGE
 echo "# Done"
 echo ""
 
@@ -47,7 +47,7 @@ if docker network list | grep -q "$NGINX_CONTROLLER_AGENT_DOCKER_NETWORK"; then
 	echo "# Netowrk '$NGINX_CONTROLLER_AGENT_DOCKER_NETWORK' Exists.";
 else
 	echo "# Creating Docker Network '$NGINX_CONTROLLER_AGENT_DOCKER_NETWORK'";
-	docker network create "$NGINX_CONTROLLER_AGENT_DOCKER_NETWORK";
+	sudo docker network create "$NGINX_CONTROLLER_AGENT_DOCKER_NETWORK";
 	echo "# Done";
 fi
 
@@ -69,7 +69,7 @@ Requires=docker.service
 TimeoutStartSec=0
 TimeoutStopSec=5
 Restart=always
-ExecStartPre=$(echo "$COMMAND" | sed 's/aws ecr/sudo \/usr\/bin\/aws ecr/g' | sed 's/docker login/sudo \/usr\/bin\/docker login/g')
+ExecStartPre=$DOCKER_LOGIN_COMMAND
 ExecStartPre=-/usr/bin/docker container stop $AGENT_CONTAINER_NAME
 ExecStartPre=-/usr/bin/docker container rm $AGENT_CONTAINER_NAME
 ExecStartPre=sudo /usr/bin/docker pull $NGINX_SERVER_CONTAINER_IMAGE
